@@ -726,9 +726,9 @@ export function ChatReplayPanel({
               </Button>
             </div>
           ) : (
-            visibleMessages.map((comment) => (
+            visibleMessages.map((comment, index) => (
               <ChatMessageRow
-                key={comment.id}
+                key={`${comment.id}-${comment.timestamp}-${index}`}
                 comment={comment}
                 episodeStartOffset={episodeStartOffset}
                 showTimestamp={settings.showTimestamp}
