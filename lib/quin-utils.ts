@@ -127,6 +127,7 @@ export function formatDateShort(isoString?: string | null): string {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
+      timeZone: 'UTC',
     }).format(date)
   } catch {
     return ''
