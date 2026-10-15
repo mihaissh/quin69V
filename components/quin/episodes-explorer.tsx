@@ -1,30 +1,27 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import useSWR, { preload } from 'swr'
-import {
-  Film,
-  Search,
-  Calendar,
-  ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
-  SlidersHorizontal,
-  X,
-  Gamepad2,
-} from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
+import { ArrowLeft, ArrowRight, Close as X, Search } from './icons'
 import { SiteHeader } from './site-header'
 import { SiteFooter } from './site-footer'
-import { EpisodeCard } from './episode-card'
+import { EpisodeCard, EpisodeGridSkeleton } from './episode-card'
+import { Pager } from './pager'
+import { formatBoxArtUrl, formatCount } from '@/lib/quin-utils'
 import { useWatchProgress } from '@/lib/use-quin-state'
 import type { QuinGameEpisode, QuinLibraryGame } from '@/lib/quin-types'
 import { cn } from '@/lib/utils'
 
+const PAGE_SIZE = 20
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
+
+type GamesResponse = {
+  success: boolean
+  data: QuinGameEpisode[]
+  meta: { page: number; limit: number; total: number }
+}
 
 export function EpisodesExplorer({
   initialEpisodes,
@@ -39,68 +36,76 @@ export function EpisodesExplorer({
   const searchParams = useSearchParams()
   const { getEpisodeProgress } = useWatchProgress()
 
-  const pageParam = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
-  const gameIdParam = searchParams.get('game_id') || ''
-  const filterModeParam = searchParams.get('filter') || 'Default'
-  const gameSearchParam = searchParams.get('game') || ''
-  const fromDateParam = searchParams.get('from') || ''
-  const toDateParam = searchParams.get('to') || ''
+  const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10))
+  const gameId = searchParams.get('game_id') || ''
+  const gameQuery = searchParams.get('game') || ''
+  const from = searchParams.get('from') || ''
+  const to = searchParams.get('to') || ''
 
-  const [searchInput, setSearchInput] = useState(gameSearchParam)
-  const [fromDate, setFromDate] = useState(fromDateParam)
-  const [toDate, setToDate] = useState(toDateParam)
+  const [input, setInput] = useState(gameQuery)
+  const typedRef = useRef(false)
 
   useEffect(() => {
-    setSearchInput(gameSearchParam)
-  }, [gameSearchParam])
+    if (!typedRef.current) setInput(gameQuery)
+  }, [gameQuery])
 
-  const updateUrlParams = (patch: Record<string, string | null>) => {
+  const setParams = (
+    patch: Record<string, string | null>,
+    mode: 'push' | 'replace' = 'push'
+  ) => {
     const next = new URLSearchParams(searchParams.toString())
+    next.delete('filter') // legacy param
     for (const [k, v] of Object.entries(patch)) {
       if (!v) next.delete(k)
       else next.set(k, v)
     }
     const qs = next.toString()
-    router.push(`/games${qs ? `?${qs}` : ''}`)
+    const url = `/games${qs ? `?${qs}` : ''}`
+    if (mode === 'replace') router.replace(url, { scroll: false })
+    else router.push(url)
   }
 
-  // Build API URL for current filter state
-  const apiUrl = useMemo(() => {
+  // Search as you type (debounced), without stacking history entries
+  useEffect(() => {
+    if (!typedRef.current) return
+    const value = input.trim()
+    const t = setTimeout(() => {
+      typedRef.current = false
+      if (value === gameQuery) return
+      setParams({ game: value || null, game_id: null, page: null }, 'replace')
+    }, 350)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input])
+
+  const buildUrl = (p: number) => {
     const sp = new URLSearchParams()
-    sp.set('limit', '20')
-    sp.set('page', String(pageParam))
+    sp.set('limit', String(PAGE_SIZE))
+    sp.set('page', String(p))
     sp.set('sort', 'created_at')
     sp.set('order', 'desc')
-    if (gameIdParam) sp.set('game_id', gameIdParam)
-    if (gameSearchParam) sp.set('game_name', gameSearchParam)
-    if (fromDateParam && toDateParam) {
-      try {
-        sp.set('from', new Date(fromDateParam).toISOString())
-        sp.set('to', new Date(toDateParam).toISOString())
-      } catch {
-        // Ignore invalid date
+    if (gameId) sp.set('game_id', gameId)
+    if (gameQuery) sp.set('game_name', gameQuery)
+    if (from && to) {
+      const f = new Date(from)
+      const tt = new Date(to)
+      if (!isNaN(+f) && !isNaN(+tt)) {
+        sp.set('from', f.toISOString())
+        sp.set('to', tt.toISOString())
       }
     }
     return `/api/quin/games?${sp.toString()}`
-  }, [pageParam, gameIdParam, gameSearchParam, fromDateParam, toDateParam])
+  }
+  const apiUrl = buildUrl(page)
 
-  const isDefaultInitialState =
-    pageParam === 1 &&
-    !gameIdParam &&
-    !gameSearchParam &&
-    !fromDateParam &&
-    !toDateParam
+  const isDefault = page === 1 && !gameId && !gameQuery && !from && !to
 
-  const { data, isLoading } = useSWR<{
-    success: boolean
-    data: QuinGameEpisode[]
-    meta: { page: number; limit: number; total: number }
-  }>(apiUrl, fetcher, {
-    fallbackData: isDefaultInitialState
+  const { data, isLoading } = useSWR<GamesResponse>(apiUrl, fetcher, {
+    fallbackData: isDefault
       ? {
           success: true,
           data: initialEpisodes,
-          meta: { page: 1, limit: 20, total: initialTotal },
+          meta: { page: 1, limit: PAGE_SIZE, total: initialTotal },
         }
       : undefined,
     keepPreviousData: true,
@@ -108,267 +113,211 @@ export function EpisodesExplorer({
   })
 
   const episodes = data?.data ?? []
-  const totalEpisodes = data?.meta?.total ?? initialTotal
-  const totalPages = Math.max(1, Math.ceil(totalEpisodes / 20))
+  const total = data?.meta?.total ?? initialTotal
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
-  // Prefetch next page for instant pagination
-  const prefetchPage = (targetPage: number) => {
-    if (targetPage < 1 || targetPage > totalPages) return
-    const sp = new URLSearchParams(apiUrl.split('?')[1] || '')
-    sp.set('page', String(targetPage))
-    preload(`/api/quin/games?${sp.toString()}`, fetcher)
+  const prefetch = (p: number) => {
+    if (p >= 1 && p <= totalPages && p !== page) preload(buildUrl(p), fetcher)
   }
 
-  const activeCategoryName = useMemo(() => {
-    if (!gameIdParam) return null
-    const found = topGames.find((g) => String(g.game_id) === gameIdParam)
-    if (found) return found.game_name
-    return episodes[0]?.game_name ?? `Game #${gameIdParam}`
-  }, [gameIdParam, topGames, episodes])
+  const activeGame = useMemo(() => {
+    if (!gameId) return null
+    const g = topGames.find((x) => String(x.game_id) === gameId)
+    return {
+      name: g?.game_name ?? episodes[0]?.game_name ?? 'Game',
+      image: g?.chapter_image ?? episodes[0]?.chapter_image ?? null,
+    }
+  }, [gameId, topGames, episodes])
+
+  const title = activeGame
+    ? activeGame.name
+    : gameQuery
+      ? `Episodes matching “${gameQuery}”`
+      : 'All episodes'
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background">
+    <div className="flex min-h-dvh flex-col">
       <SiteHeader />
 
-      <main className="mx-auto flex w-full max-w-[1800px] flex-1 flex-col gap-6 px-3 py-6 sm:px-6">
-        {/* Page Header + Filter Bar */}
-        <div className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              {gameIdParam && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => updateUrlParams({ game_id: null, page: null })}
+      <main className="page-in mx-auto flex w-full max-w-[1600px] flex-1 flex-col px-3 pb-12 pt-6 sm:px-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex items-end gap-3">
+            {activeGame?.image && (
+              <img
+                src={formatBoxArtUrl(activeGame.image, 96, 128)}
+                alt=""
+                className="h-16 w-12 rounded-sm bg-surface object-cover"
+              />
+            )}
+            <div>
+              {activeGame && (
+                <Link
+                  href="/games"
+                  className="flex items-center gap-1 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  <ArrowLeft data-icon="inline-start" />
-                  All Games
-                </Button>
+                  <ArrowLeft className="size-3.5" />
+                  All episodes
+                </Link>
               )}
-              <div>
-                <div className="flex items-center gap-2">
-                  <Film className="size-5 text-primary" />
-                  <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
-                    {activeCategoryName
-                      ? `${activeCategoryName} Episodes`
-                      : 'All Quin69 Episodes'}
-                  </h1>
-                  <Badge className="bg-primary/15 text-primary border-primary/30 font-mono text-xs">
-                    {totalEpisodes} Episodes
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Watch any episode with full Twitch chat replay, 7TV/BTTV/FFZ
-                  emotes, and VOD chapter timelines.
-                </p>
-              </div>
-            </div>
-
-            {/* Search & Filter Mode Controls */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative w-full sm:w-64">
-                <Input
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.nativeEvent.isComposing || e.keyCode === 229) return
-                    if (e.key === 'Enter') {
-                      updateUrlParams({
-                        game: searchInput.trim() || null,
-                        filter: searchInput.trim() ? 'Game' : null,
-                        page: null,
-                      })
-                    }
-                  }}
-                  placeholder="Filter by game name..."
-                  className="h-9 pr-8 text-xs"
-                />
-                {searchInput && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearchInput('')
-                      updateUrlParams({ game: null, filter: null, page: null })
-                    }}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <Button
-                size="sm"
-                onClick={() =>
-                  updateUrlParams({
-                    game: searchInput.trim() || null,
-                    filter: searchInput.trim() ? 'Game' : null,
-                    page: null,
-                  })
-                }
-              >
-                <Search data-icon="inline-start" />
-                Filter
-              </Button>
+              <h1 className="font-display text-[34px] font-semibold leading-none tracking-wide">
+                {title}
+              </h1>
+              <p className="tnum mt-1.5 text-muted-foreground">
+                {formatCount(total)} episodes
+              </p>
             </div>
           </div>
 
-          {/* Quick Category Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto border-t border-border/60 pt-3 chat-scrollbar">
-            <span className="shrink-0 font-mono text-[11px] text-muted-foreground flex items-center gap-1 mr-1">
-              <Gamepad2 className="size-3.5 text-primary" />
-              Categories:
-            </span>
-            <button
-              type="button"
-              onClick={() =>
-                updateUrlParams({ game_id: null, game: null, page: null })
-              }
-              className={cn(
-                'shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors',
-                !gameIdParam && !gameSearchParam
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-muted-foreground hover:text-foreground'
-              )}
+          <label className="relative block w-full sm:w-72">
+            <span className="sr-only">Filter by game</span>
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
+            <input
+              value={input}
+              onChange={(e) => {
+                typedRef.current = true
+                setInput(e.target.value)
+              }}
+              placeholder="Filter by game"
+              className="h-10 w-full rounded-md border border-border bg-surface pl-9 pr-9 outline-none placeholder:text-faint focus:border-primary"
+            />
+            {input && (
+              <button
+                type="button"
+                aria-label="Clear filter"
+                onClick={() => {
+                  typedRef.current = false
+                  setInput('')
+                  setParams({ game: null, page: null }, 'replace')
+                }}
+                className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-4" />
+              </button>
+            )}
+          </label>
+        </div>
+
+        {topGames.length > 0 && (
+          <div className="no-scrollbar -mx-3 mt-5 flex gap-2 overflow-x-auto px-3 sm:mx-0 sm:flex-wrap sm:px-0">
+            <Chip
+              active={!gameId && !gameQuery}
+              onClick={() => {
+                setInput('')
+                setParams({ game_id: null, game: null, page: null })
+              }}
             >
-              All Episodes
-            </button>
+              All
+            </Chip>
             {topGames.slice(0, 8).map((g) => {
-              const active = String(g.game_id) === gameIdParam
+              const active = String(g.game_id) === gameId
               return (
-                <button
+                <Chip
                   key={g.game_id}
-                  type="button"
-                  onClick={() =>
-                    updateUrlParams({
+                  active={active}
+                  onClick={() => {
+                    setInput('')
+                    setParams({
                       game_id: active ? null : String(g.game_id),
                       game: null,
                       page: null,
                     })
-                  }
-                  className={cn(
-                    'flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors',
-                    active
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-secondary/70 text-muted-foreground hover:bg-secondary hover:text-foreground'
-                  )}
+                  }}
                 >
-                  <span>{g.game_name}</span>
-                  <span className="font-mono text-[10px] opacity-80">
-                    ({g.count})
+                  {g.game_name}
+                  <span className={cn('tnum ml-1.5', active ? 'opacity-70' : 'text-faint')}>
+                    {g.count}
                   </span>
-                </button>
+                </Chip>
               )
             })}
+            <Link
+              href="/library"
+              className="flex h-8 shrink-0 items-center px-2 text-[13px] text-muted-foreground hover:text-foreground"
+            >
+              More games
+              <ArrowRight className="ml-1 size-3.5" />
+            </Link>
           </div>
+        )}
+
+        <div className="mt-6">
+          {isLoading && episodes.length === 0 ? (
+            <div className="grid grid-cols-1 gap-x-4 gap-y-7 min-[480px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+              <EpisodeGridSkeleton count={PAGE_SIZE} />
+            </div>
+          ) : episodes.length === 0 ? (
+            <div className="py-20 text-center">
+              <p className="text-[16px]">No episodes found.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setInput('')
+                  router.push('/games')
+                }}
+                className="mt-2 text-primary hover:underline"
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                'stagger grid grid-cols-1 gap-x-4 gap-y-7 transition-opacity min-[480px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5',
+                isLoading && 'opacity-60'
+              )}
+            >
+              {episodes.map((ep, i) => (
+                <EpisodeCard
+                  key={ep.id}
+                  episode={ep}
+                  priority={i < 4}
+                  index={i}
+                  progressSeconds={getEpisodeProgress(ep.id)}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Episodes Grid */}
-        {isLoading && episodes.length === 0 ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {Array.from({ length: 15 }).map((_, idx) => (
-              <div
-                key={idx}
-                className="aspect-[16/12] rounded-xl border border-border bg-card animate-pulse"
-              />
-            ))}
-          </div>
-        ) : episodes.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card py-16 text-center">
-            <Film className="size-8 text-muted-foreground" />
-            <h2 className="text-base font-bold">
-              No episodes found matching your filter
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              Try clearing your search or selecting another game category.
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setSearchInput('')
-                router.push('/games')
-              }}
-            >
-              Reset Filters
-            </Button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {episodes.map((ep) => (
-              <EpisodeCard
-                key={ep.id}
-                episode={ep}
-                progressSeconds={getEpisodeProgress(ep.id)}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Pagination Bar */}
-        {totalPages > 1 && (
-          <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3">
-            <span className="font-mono text-xs text-muted-foreground">
-              Page <strong className="text-foreground">{pageParam}</strong> of{' '}
-              <strong className="text-foreground">{totalPages}</strong> &bull;{' '}
-              {totalEpisodes} Episodes
-            </span>
-
-            <div className="flex items-center gap-1.5">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pageParam <= 1}
-                onMouseEnter={() => prefetchPage(pageParam - 1)}
-                onClick={() =>
-                  updateUrlParams({
-                    page: pageParam - 1 <= 1 ? null : String(pageParam - 1),
-                  })
-                }
-              >
-                <ChevronLeft data-icon="inline-start" />
-                Prev
-              </Button>
-
-              {Array.from({ length: Math.min(7, totalPages) }).map((_, i) => {
-                let p = i + 1
-                if (totalPages > 7 && pageParam > 4) {
-                  p = Math.min(totalPages - 6 + i, pageParam - 3 + i)
-                }
-                return (
-                  <Button
-                    key={p}
-                    variant={p === pageParam ? 'default' : 'outline'}
-                    size="sm"
-                    className="font-mono w-9"
-                    onMouseEnter={() => prefetchPage(p)}
-                    onClick={() =>
-                      updateUrlParams({ page: p === 1 ? null : String(p) })
-                    }
-                  >
-                    {p}
-                  </Button>
-                )
-              })}
-
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pageParam >= totalPages}
-                onMouseEnter={() => prefetchPage(pageParam + 1)}
-                onClick={() =>
-                  updateUrlParams({ page: String(pageParam + 1) })
-                }
-              >
-                Next
-                <ChevronRight data-icon="inline-end" />
-              </Button>
-            </div>
-          </div>
-        )}
+        <div className="mt-10">
+          <Pager
+            page={page}
+            totalPages={totalPages}
+            prevLabel="Newer"
+            nextLabel="Older"
+            onPrefetch={prefetch}
+            onPage={(p) => setParams({ page: p <= 1 ? null : String(p) })}
+          />
+        </div>
       </main>
 
       <SiteFooter />
     </div>
+  )
+}
+
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        'press flex h-8 shrink-0 items-center rounded-md px-3 text-[13px] font-medium',
+        active
+          ? 'bg-foreground text-background'
+          : 'bg-surface text-foreground/85 hover:bg-raised'
+      )}
+    >
+      {children}
+    </button>
   )
 }

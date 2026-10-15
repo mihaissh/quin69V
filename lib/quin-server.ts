@@ -48,7 +48,7 @@ export async function getQuinOverviewServer(): Promise<QuinOverviewData> {
         data: QuinGameEpisode[]
         meta?: { total: number }
       }>(
-        `${ARCHIVE_API_BASE}/${QUIN_SLUG}/games?limit=12&page=1&sort=created_at&order=desc`,
+        `${ARCHIVE_API_BASE}/${QUIN_SLUG}/games?limit=15&page=1&sort=created_at&order=desc`,
         90
       ),
       fetchJsonWithTimeout<{
@@ -302,4 +302,99 @@ export async function getQuinVodBundleServer(
     initialComments: initialCommentsRes?.data?.comments ?? [],
     initialCursor: initialCommentsRes?.data?.cursor ?? null,
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Fast path for the watch page                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Small in-memory cache for data that is the same for every VOD (channel
+ * emotes, badges). Some of these responses are bigger than Next's 2MB fetch
+ * cache limit, so without this they were re-downloaded on every page view.
+ */
+const memo = new Map<string, { at: number; value: Promise<unknown> }>()
+function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const hit = memo.get(key)
+  if (hit && Date.now() - hit.at < ttlMs) return hit.value as Promise<T>
+  const value = load().catch((err) => {
+    memo.delete(key)
+    throw err
+  })
+  memo.set(key, { at: Date.now(), value })
+  return value
+}
+
+/** Only the VOD itself: one ~150ms request, enough to render the page. */
+export async function getQuinVodServer(vodId: string | number): Promise<QuinVodDetail | null> {
+  const res = await fetchJsonWithTimeout<{ success: boolean; data: QuinVodDetail }>(
+    `${ARCHIVE_API_BASE}/${QUIN_SLUG}/vods/${vodId}`,
+    120
+  )
+  return res?.success && res.data ? res.data : null
+}
+
+type RawEmote = { id: string | number; code?: string; name?: string; text?: string; width?: number; height?: number; flags?: number }
+
+function getChannelAssets() {
+  return cached('channel-assets', 60 * 60 * 1000, async () => {
+    const [badgesRes, bttvGlobal, bttvChannel, sevenTvGlobal, sevenTvUser, ffzRoom] = await Promise.all([
+      fetchJsonWithTimeout<{ success: boolean; data: { channel?: QuinBadgeSet[]; global?: QuinBadgeSet[] } }>(
+        `${ARCHIVE_API_BASE}/${QUIN_SLUG}/badges/twitch`, 3600),
+      fetchJsonWithTimeout<RawEmote[]>('https://api.betterttv.net/3/cached/emotes/global', 3600, 4000),
+      fetchJsonWithTimeout<{ channelEmotes?: RawEmote[]; sharedEmotes?: RawEmote[] }>(
+        `https://api.betterttv.net/3/cached/users/twitch/${QUIN_TWITCH_ID}`, 3600, 4000),
+      fetchJsonWithTimeout<{ emotes?: RawEmote[] }>('https://7tv.io/v3/emote-sets/global', 3600, 4000),
+      fetchJsonWithTimeout<{ emote_set?: { emotes?: RawEmote[] } }>(
+        `https://7tv.io/v3/users/twitch/${QUIN_TWITCH_ID}`, 3600, 4000),
+      fetchJsonWithTimeout<{ room?: { set?: number }; sets?: Record<string, { emoticons?: RawEmote[] }> }>(
+        `https://api.frankerfacez.com/v1/room/id/${QUIN_TWITCH_ID}`, 3600, 4000),
+    ])
+    // Keep only the fields the chat uses (the raw badge payload is ~300KB)
+    const slimBadges = (sets: QuinBadgeSet[] = []) =>
+      sets.map((s) => ({
+        set_id: s.set_id,
+        versions: (s.versions ?? []).map((v) => ({
+          id: v.id,
+          image_url_1x: v.image_url_1x,
+          image_url_2x: v.image_url_2x,
+          image_url_4x: v.image_url_4x,
+          title: v.title,
+        })),
+      }))
+    return {
+      badges: {
+        channel: slimBadges(badgesRes?.data?.channel),
+        global: slimBadges(badgesRes?.data?.global),
+      },
+      ffzRoom: ffzRoom?.room?.set ? (ffzRoom.sets?.[String(ffzRoom.room.set)]?.emoticons ?? []) : [],
+      bttv: [...(bttvGlobal ?? []), ...(bttvChannel?.sharedEmotes ?? []), ...(bttvChannel?.channelEmotes ?? [])],
+      sevenTv: [...(sevenTvGlobal?.emotes ?? []), ...(sevenTvUser?.emote_set?.emotes ?? [])],
+    }
+  })
+}
+
+/** Emotes + badges for one VOD (channel sets are cached, the VOD's own set is small). */
+export async function getQuinVodAssetsServer(vodId: string | number) {
+  const [channel, vodEmotesRes] = await Promise.all([
+    getChannelAssets(),
+    fetchJsonWithTimeout<{
+      success: boolean
+      data: { ffz_emotes?: RawEmote[]; bttv_emotes?: RawEmote[]; seventv_emotes?: RawEmote[] }
+    }>(`${ARCHIVE_API_BASE}/${QUIN_SLUG}/vods/${vodId}/emotes`, 600),
+  ])
+
+  const map = new Map<string, QuinEmoteItem>()
+  const put = (e: RawEmote, provider: QuinEmoteItem['provider'], code = e.code || e.name || e.text || '') => {
+    if (!code) return
+    map.set(code, { id: String(e.id), code, name: code, width: e.width, height: e.height, flags: e.flags, provider })
+  }
+  const vodFfz = vodEmotesRes?.data?.ffz_emotes ?? []
+  ;(vodFfz.length ? vodFfz : channel.ffzRoom).forEach((e) => put(e, 'FFZ'))
+  channel.bttv.forEach((e) => put(e, 'BTTV'))
+  ;(vodEmotesRes?.data?.bttv_emotes ?? []).forEach((e) => put(e, 'BTTV'))
+  channel.sevenTv.forEach((e) => put(e, '7TV', e.name || e.code))
+  ;(vodEmotesRes?.data?.seventv_emotes ?? []).forEach((e) => put(e, '7TV', e.name || e.code))
+
+  return { emotes: Array.from(map.values()), badges: channel.badges }
 }

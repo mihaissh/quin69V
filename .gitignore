@@ -14,3 +14,12 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+
+# Secrets (keep .env.example)
+.env
+.env.*
+!.env.example
+
+# Local tooling output
+Claude outputs/
+*.tsbuildinfo

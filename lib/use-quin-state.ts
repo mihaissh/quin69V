@@ -1,97 +1,162 @@
 'use client'
 
-import useSWR from 'swr'
+import { useCallback, useSyncExternalStore } from 'react'
 import type { WatchProgressItem } from './quin-types'
+
+/*
+  Tiny persisted stores. State lives in memory, is mirrored to localStorage
+  (when available) and is read through useSyncExternalStore, so the server
+  render and hydration always see the defaults and the saved values appear
+  right after mount without a hydration mismatch.
+*/
+
+function createStore<T>(key: string, initial: T, writeDelayMs = 0) {
+  let state = initial
+  let loaded = false
+  let writeTimer: ReturnType<typeof setTimeout> | null = null
+  const listeners = new Set<() => void>()
+
+  const load = () => {
+    if (loaded || typeof window === 'undefined') return
+    loaded = true
+    try {
+      const raw = window.localStorage.getItem(key)
+      if (raw) state = JSON.parse(raw) as T
+    } catch {
+      // storage blocked or corrupt — keep defaults
+    }
+  }
+
+  const flush = () => {
+    writeTimer = null
+    try {
+      window.localStorage.setItem(key, JSON.stringify(state))
+    } catch {
+      // ignore quota / privacy mode
+    }
+  }
+
+  const persist = () => {
+    if (typeof window === 'undefined') return
+    if (writeDelayMs === 0) return flush()
+    if (writeTimer) return
+    writeTimer = setTimeout(flush, writeDelayMs)
+  }
+
+  if (typeof window !== 'undefined' && writeDelayMs > 0) {
+    window.addEventListener('pagehide', () => {
+      if (writeTimer) {
+        clearTimeout(writeTimer)
+        flush()
+      }
+    })
+  }
+
+  return {
+    subscribe(listener: () => void) {
+      load()
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    get() {
+      load()
+      return state
+    },
+    getServer() {
+      return initial
+    },
+    set(next: T) {
+      state = next
+      persist()
+      listeners.forEach((l) => l())
+    },
+  }
+}
+
+/* ---------------- Chat settings ---------------- */
+
+export type VideoQuality = 'hd2160' | 'hd1440' | 'hd1080' | 'hd720' | 'large' | 'auto'
 
 export interface ChatReplaySettings {
   showTimestamp: boolean
   chatWidth: number
-  fontFamily: string
   messageFontSize: number
   chatOnLeft: boolean
   userChatDelay: number
   filterWords: string[]
-  cinemaGlow: boolean
+  /** YouTube quality hint passed as `vq` (YouTube falls back if unavailable) */
+  videoQuality: VideoQuality
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatReplaySettings = {
   showTimestamp: true,
-  chatWidth: 360,
-  fontFamily: 'var(--font-sans)',
+  chatWidth: 340,
   messageFontSize: 13,
   chatOnLeft: false,
   userChatDelay: 0,
   filterWords: [],
-  cinemaGlow: true,
+  videoQuality: 'hd1080',
 }
 
-let inMemoryChatSettings: ChatReplaySettings = { ...DEFAULT_CHAT_SETTINGS }
-let inMemoryWatchHistory: WatchProgressItem[] = []
+const settingsStore = createStore<ChatReplaySettings>(
+  'quin.chat-settings',
+  DEFAULT_CHAT_SETTINGS
+)
 
 export function useChatSettings() {
-  const { data, mutate } = useSWR<ChatReplaySettings>(
-    'quin-chat-settings',
-    () => inMemoryChatSettings,
-    {
-      fallbackData: inMemoryChatSettings,
-      revalidateOnFocus: false,
-    }
+  const stored = useSyncExternalStore(
+    settingsStore.subscribe,
+    settingsStore.get,
+    settingsStore.getServer
   )
+  const settings = { ...DEFAULT_CHAT_SETTINGS, ...stored }
 
-  const updateSettings = (patch: Partial<ChatReplaySettings>) => {
-    inMemoryChatSettings = { ...inMemoryChatSettings, ...patch }
-    mutate(inMemoryChatSettings, false)
-  }
+  const updateSettings = useCallback((patch: Partial<ChatReplaySettings>) => {
+    settingsStore.set({ ...settingsStore.get(), ...patch })
+  }, [])
 
-  const resetSettings = () => {
-    inMemoryChatSettings = { ...DEFAULT_CHAT_SETTINGS }
-    mutate(inMemoryChatSettings, false)
-  }
+  const resetSettings = useCallback(() => {
+    settingsStore.set({ ...DEFAULT_CHAT_SETTINGS })
+  }, [])
 
-  return {
-    settings: data ?? DEFAULT_CHAT_SETTINGS,
-    updateSettings,
-    resetSettings,
-  }
+  return { settings, updateSettings, resetSettings }
+}
+
+/* ---------------- Watch progress ---------------- */
+
+const EMPTY: WatchProgressItem[] = []
+const progressStore = createStore<WatchProgressItem[]>(
+  'quin.watch-progress',
+  EMPTY,
+  4000
+)
+
+export function getSavedProgress(episodeId: number): number {
+  return progressStore.get().find((x) => x.episodeId === episodeId)?.timestamp ?? 0
 }
 
 export function useWatchProgress() {
-  const { data, mutate } = useSWR<WatchProgressItem[]>(
-    'quin-watch-progress',
-    () => inMemoryWatchHistory,
-    {
-      fallbackData: inMemoryWatchHistory,
-      revalidateOnFocus: false,
-    }
+  const history = useSyncExternalStore(
+    progressStore.subscribe,
+    progressStore.get,
+    progressStore.getServer
   )
 
-  const saveProgress = (item: WatchProgressItem) => {
+  const saveProgress = useCallback((item: WatchProgressItem) => {
     if (item.timestamp < 5) return
-    const filtered = inMemoryWatchHistory.filter(
-      (x) => x.episodeId !== item.episodeId
-    )
-    inMemoryWatchHistory = [item, ...filtered].slice(0, 8)
-    mutate(inMemoryWatchHistory, false)
-  }
+    const rest = progressStore.get().filter((x) => x.episodeId !== item.episodeId)
+    progressStore.set([item, ...rest].slice(0, 12))
+  }, [])
 
-  const getEpisodeProgress = (episodeId: number): number => {
-    const found = (data ?? inMemoryWatchHistory).find(
-      (x) => x.episodeId === episodeId
-    )
-    return found ? found.timestamp : 0
-  }
+  const getEpisodeProgress = useCallback(
+    (episodeId: number) =>
+      history.find((x) => x.episodeId === episodeId)?.timestamp ?? 0,
+    [history]
+  )
 
-  const removeProgress = (episodeId: number) => {
-    inMemoryWatchHistory = inMemoryWatchHistory.filter(
-      (x) => x.episodeId !== episodeId
-    )
-    mutate(inMemoryWatchHistory, false)
-  }
+  const removeProgress = useCallback((episodeId: number) => {
+    progressStore.set(progressStore.get().filter((x) => x.episodeId !== episodeId))
+  }, [])
 
-  return {
-    history: data ?? [],
-    saveProgress,
-    getEpisodeProgress,
-    removeProgress,
-  }
+  return { history, saveProgress, getEpisodeProgress, removeProgress }
 }
