@@ -92,3 +92,6 @@ export const SpinnerRing = make("<path fill=\"currentColor\" d=\"M12,1A11,11,0,1
 
 /** svg-spinners:3-dots-fade */
 export const SpinnerDots = make("<circle cx=\"4\" cy=\"12\" r=\"3\" fill=\"currentColor\"><animate id=\"SVG7x14Dcom\" fill=\"freeze\" attributeName=\"opacity\" begin=\"0;SVGqSjG0dUp.end-0.25s\" dur=\"0.75s\" values=\"1;.2\"/></circle><circle cx=\"12\" cy=\"12\" r=\"3\" fill=\"currentColor\" opacity=\".4\"><animate fill=\"freeze\" attributeName=\"opacity\" begin=\"SVG7x14Dcom.begin+0.15s\" dur=\"0.75s\" values=\"1;.2\"/></circle><circle cx=\"20\" cy=\"12\" r=\"3\" fill=\"currentColor\" opacity=\".3\"><animate id=\"SVGqSjG0dUp\" fill=\"freeze\" attributeName=\"opacity\" begin=\"SVG7x14Dcom.begin+0.3s\" dur=\"0.75s\" values=\"1;.2\"/></circle>", '0 0 24 24')
+
+/** mingcute:information-line */
+export const Info = make("<path fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M12 8h.002M11 11h1v6h.5m8.5-5a9 9 0 1 1-18 0a9 9 0 0 1 18 0\"/>", '0 0 24 24')

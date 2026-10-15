@@ -86,6 +86,8 @@ export interface ChatReplaySettings {
   filterWords: string[]
   /** YouTube quality hint passed as `vq` (YouTube falls back if unavailable) */
   videoQuality: VideoQuality
+  /** Dismissed the "extension blocks quality" tip on the watch page */
+  hideQualityTip: boolean
 }
 
 export const DEFAULT_CHAT_SETTINGS: ChatReplaySettings = {
@@ -96,6 +98,7 @@ export const DEFAULT_CHAT_SETTINGS: ChatReplaySettings = {
   userChatDelay: 0,
   filterWords: [],
   videoQuality: 'hd1080',
+  hideQualityTip: false,
 }
 
 const settingsStore = createStore<ChatReplaySettings>(

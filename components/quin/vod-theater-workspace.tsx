@@ -16,6 +16,7 @@ import { ChatReplayPanel } from './chat-replay-panel'
 import { YouTubePlayer, YT_STATE } from './youtube-player'
 import { Morph, episodeMorphName } from './transitions'
 import { Thumb } from './thumb'
+import { QualityTip } from './quality-tip'
 import { VodRelated, useSeriesNeighbours, streamHref } from './vod-related'
 import {
   episodeHref,
@@ -312,6 +313,8 @@ export function VodTheaterWorkspace({ bundle }: { bundle: QuinVodBundleResponse 
             )}
           </div>
           </Morph>
+
+          {!theater && episode && <QualityTip />}
 
           {!theater && (
             <div className="fade-in px-3 pb-3 pt-3 sm:px-5 lg:pb-4">
