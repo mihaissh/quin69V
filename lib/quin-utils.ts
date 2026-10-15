@@ -1,6 +1,11 @@
 export const QUIN_CHANNEL = 'Quin69'
 export const QUIN_SLUG = 'quin69'
 export const QUIN_TWITCH_ID = '56649026'
+// Quin's Twitch profile picture (from twitch.tv/quin69). Swap the id if he changes it.
+const QUIN_AVATAR_ID = '2f5addde-fd0d-4a10-82a9-ea91ebb17f8d'
+export const quinAvatar = (size: 70 | 150 | 300 | 600 = 70) =>
+  `https://static-cdn.jtvnw.net/jtv_user_pictures/${QUIN_AVATAR_ID}-profile_image-${size}x${size}.png`
+
 export const ARCHIVE_API_BASE = 'https://archive.overpowered.tv/api/v1'
 
 export const QUIN_SOCIALS = [
@@ -186,4 +191,17 @@ export function getEmoteSrcSet(
     default:
       return `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/1.0 1x, https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/2.0 2x, https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/3.0 4x`
   }
+}
+
+export function episodeHref(
+  ep: { vod_id: number; id: number },
+  seconds = 0
+): string {
+  const t = seconds > 15 ? `&t=${Math.floor(seconds)}` : ''
+  return `/games/${ep.vod_id}?game_id=${ep.id}${t}`
+}
+
+export function formatCount(n: number | string): string {
+  const v = Number(n) || 0
+  return v.toLocaleString('en-US')
 }

@@ -1,39 +1,18 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
-import {
-  Tv,
-  Film,
-  Library,
-  Search,
-  Radio,
-  ExternalLink,
-  Sparkles,
-  Play,
-  Clock,
-  Gamepad2,
-  Menu,
-  X,
-} from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Kbd } from '@/components/ui/kbd'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { Search, Twitch } from './icons'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import {
+  quinAvatar,
+  episodeHref,
   formatBoxArtUrl,
   formatDateShort,
   formatDuration,
-  QUIN_SOCIALS,
 } from '@/lib/quin-utils'
 import type {
   QuinGameEpisode,
@@ -43,474 +22,276 @@ import type {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
-export function SiteHeader({
-  compact = false,
-  rightSlot,
-}: {
-  compact?: boolean
-  rightSlot?: React.ReactNode
-}) {
+export function useOverview(fallbackData?: QuinOverviewData) {
+  return useSWR<QuinOverviewData>('/api/quin/overview', fetcher, {
+    fallbackData,
+    refreshInterval: 60_000,
+    revalidateOnFocus: false,
+  })
+}
+
+export function SiteHeader({ rightSlot }: { rightSlot?: React.ReactNode }) {
   const pathname = usePathname()
-  const router = useRouter()
   const [searchOpen, setSearchOpen] = useState(false)
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const [debouncedQuery, setDebouncedQuery] = useState('')
-
-  const { data: overview } = useSWR<QuinOverviewData>(
-    '/api/quin/overview',
-    fetcher,
-    {
-      refreshInterval: 60000,
-      revalidateOnFocus: false,
-    }
-  )
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(query.trim()), 220)
-    return () => clearTimeout(timer)
-  }, [query])
-
-  const { data: searchGamesRes, isLoading: isSearching } = useSWR<{
-    success: boolean
-    data: QuinGameEpisode[]
-  }>(
-    searchOpen && debouncedQuery.length >= 2
-      ? `/api/quin/games?limit=8&page=1&game_name=${encodeURIComponent(debouncedQuery)}`
-      : null,
-    fetcher
-  )
-
-  const { data: searchLibraryRes } = useSWR<{
-    success: boolean
-    data: QuinLibraryGame[]
-  }>(
-    searchOpen && debouncedQuery.length >= 2
-      ? `/api/quin/library?limit=6&page=1&game_name=${encodeURIComponent(debouncedQuery)}`
-      : null,
-    fetcher
-  )
+  const { data: overview } = useOverview()
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const typing =
+        target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA'
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setSearchOpen((prev) => !prev)
+        setSearchOpen((v) => !v)
+      } else if (e.key === '/' && !typing) {
+        e.preventDefault()
+        setSearchOpen(true)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  const isLive = overview?.stats?.isLive ?? false
-  const liveVod = overview?.liveVod
-  const latestVodId = overview?.stats?.latestVodId ?? 780
-
-  const navItems = [
-    {
-      href: '/',
-      label: 'Broadcast Hub',
-      icon: Tv,
-      active: pathname === '/',
-    },
+  const nav = [
+    { href: '/', label: 'Home', active: pathname === '/' },
     {
       href: '/games',
-      label: 'All Episodes',
-      icon: Film,
-      active: pathname === '/games',
-      badge: overview?.stats?.totalEpisodes
-        ? `${overview.stats.totalEpisodes}`
-        : '922',
+      label: 'Episodes',
+      active: pathname.startsWith('/games'),
     },
-    {
-      href: '/library',
-      label: 'Game Library',
-      icon: Library,
-      active: pathname === '/library',
-      badge: overview?.stats?.totalGames
-        ? `${overview.stats.totalGames}`
-        : '92',
-    },
-    {
-      href: `/games/${latestVodId}`,
-      label: 'Theater Replay',
-      icon: Play,
-      active: pathname.startsWith('/games/') && pathname !== '/games',
-    },
+    { href: '/library', label: 'Games', active: pathname === '/library' },
+    { href: '/clips', label: 'Clips', active: pathname === '/clips' },
   ]
-
-  const displayedEpisodes =
-    debouncedQuery.length >= 2
-      ? (searchGamesRes?.data ?? [])
-      : (overview?.recentEpisodes?.slice(0, 5) ?? [])
-
-  const displayedLibrary =
-    debouncedQuery.length >= 2
-      ? (searchLibraryRes?.data ?? [])
-      : (overview?.topGames?.slice(0, 6) ?? [])
 
   return (
     <>
       <header
-        className={cn(
-          'sticky top-0 z-40 w-full border-b border-border/80 bg-background/90 backdrop-blur-xl transition-colors',
-          compact ? 'h-12' : 'h-14'
-        )}
+        className="sticky top-0 z-40 h-14 shrink-0 border-b border-border bg-background"
       >
-        <div className="mx-auto flex h-full max-w-[1800px] items-center justify-between gap-4 px-3 sm:px-5">
-          {/* Left: Brand + Primary Nav */}
-          <div className="flex items-center gap-3 lg:gap-4 shrink-0">
-            <Link
-              href="/"
-              className="group flex items-center gap-2.5 focus:outline-none shrink-0"
-            >
-              <div className="relative size-8 overflow-hidden rounded-lg border border-primary/40 bg-secondary shadow-sm transition-transform group-hover:scale-105">
-                <img
-                  src="/quin69-logo.jpg"
-                  alt="Quin69 Teddy Logo"
-                  className="size-full object-cover"
-                />
-                {isLive && (
-                  <span className="absolute bottom-0 right-0 size-2.5 rounded-full bg-emerald-400 ring-2 ring-background" />
+        <div className="mx-auto flex h-full max-w-[1600px] items-center gap-2 px-3 sm:gap-6 sm:px-5">
+          <Link href="/" className="group/logo flex shrink-0 items-center gap-2.5">
+            <img
+              src={quinAvatar(70)}
+              alt=""
+              width={32}
+              height={32}
+              className="size-8 rounded-full bg-surface object-cover ring-2 ring-transparent transition-shadow group-hover/logo:ring-primary"
+            />
+            <span className="hidden font-display text-[22px] font-bold leading-none tracking-wide sm:inline">
+              QUIN69
+            </span>
+          </Link>
+
+          <nav aria-label="Main" className="flex h-full items-stretch">
+            {nav.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={item.active ? 'page' : undefined}
+                className={cn(
+                  'relative flex items-center px-2.5 text-[14px] font-medium transition-colors sm:px-3',
+                  'after:absolute after:inset-x-2.5 after:-bottom-px after:h-0.5 after:origin-center after:bg-primary after:transition-transform after:duration-200 sm:after:inset-x-3',
+                  item.active
+                    ? 'text-foreground after:scale-x-100'
+                    : 'text-muted-foreground after:scale-x-0 hover:text-foreground hover:after:scale-x-50'
                 )}
-              </div>
-              <div className="flex flex-col leading-none">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-bold tracking-tight text-foreground">
-                    QUIN69
-                  </span>
-                  <span className="rounded bg-primary/15 px-1 py-0.5 font-mono text-[10px] font-semibold text-primary">
-                    .GG
-                  </span>
-                </div>
-                <span className="hidden sm:inline-block text-[10px] font-mono text-muted-foreground">
-                  ARCHIVE &amp; REPLAY v2
-                </span>
-              </div>
-            </Link>
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
 
-            <nav
-              aria-label="Main Navigation"
-              className="hidden md:flex items-center gap-1"
-            >
-              {navItems.map((item) => {
-                const Icon = item.icon
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={cn(
-                      'flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors shrink-0',
-                      item.active
-                        ? 'bg-primary/15 text-primary border border-primary/30'
-                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent'
-                    )}
-                  >
-                    <Icon className="size-3.5 shrink-0" />
-                    <span>{item.label}</span>
-                    {item.badge && (
-                      <span
-                        className={cn(
-                          'ml-0.5 rounded px-1.5 py-0.2 font-mono text-[10px]',
-                          item.active
-                            ? 'bg-primary/20 text-primary'
-                            : 'bg-secondary text-muted-foreground'
-                        )}
-                      >
-                        {item.badge}
-                      </span>
-                    )}
-                  </Link>
-                )
-              })}
-            </nav>
-          </div>
-
-          {/* Center / Right: Quick Search + Live Stream Pill + Socials */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
-              className="flex h-8 items-center gap-2.5 rounded-md border border-border bg-secondary/60 px-2.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground"
-              aria-label="Quick search episodes and games"
+              aria-label="Search"
+              className="press flex h-9 items-center gap-2 rounded-md bg-surface px-2.5 text-muted-foreground hover:bg-raised hover:text-foreground md:w-64"
             >
-              <Search className="size-3.5 text-muted-foreground" />
-              <span className="hidden sm:inline-block pr-4">
-                Search 920+ episodes or games...
-              </span>
-              <span className="sm:hidden">Search</span>
-              <Kbd className="hidden sm:inline-flex">⌘K</Kbd>
+              <Search className="size-4" />
+              <span className="hidden text-[13px] md:inline">Search games</span>
+              <kbd className="ml-auto hidden rounded border border-border px-1.5 text-[11px] text-faint md:inline">
+                /
+              </kbd>
             </button>
-
-            {isLive ? (
-              <Link
-                href="/?live=1"
-                className="flex h-8 items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 text-xs font-semibold text-emerald-300 transition-all hover:bg-emerald-500/20"
-                title={liveVod?.title || 'Quin69 is currently LIVE on Twitch'}
-              >
-                <span className="relative flex size-2">
-                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex size-2 rounded-full bg-emerald-400" />
-                </span>
-                <span className="font-mono tracking-wide">LIVE NOW</span>
-              </Link>
-            ) : (
-              <a
-                href="https://twitch.tv/quin69"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hidden lg:flex h-8 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-              >
-                <Radio className="size-3.5 text-primary" />
-                <span>Twitch Channel</span>
-                <ExternalLink className="size-3 opacity-60" />
-              </a>
-            )}
 
             {rightSlot}
 
-            <div className="hidden 2xl:flex items-center gap-1 pl-1 border-l border-border">
-              {QUIN_SOCIALS.slice(0, 4).map((social) => (
-                <a
-                  key={social.name}
-                  href={social.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                  title={`${social.name} (${social.handle})`}
-                >
-                  {social.name}
-                </a>
-              ))}
-            </div>
-
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="md:hidden"
-              onClick={() => setMobileMenuOpen((v) => !v)}
-              aria-label="Toggle navigation menu"
+            <a
+              href="https://twitch.tv/quin69"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Quin69 on Twitch"
+              className="press hidden size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-surface hover:text-foreground lg:flex"
             >
-              {mobileMenuOpen ? <X /> : <Menu />}
-            </Button>
+              <Twitch className="size-5" />
+            </a>
           </div>
         </div>
-
-        {/* Mobile Drawer Nav */}
-        {mobileMenuOpen && (
-          <div className="border-b border-border bg-card px-4 py-3 md:hidden">
-            <div className="flex flex-col gap-1.5">
-              {navItems.map((item) => {
-                const Icon = item.icon
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileMenuOpen(false)}
-                    className={cn(
-                      'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
-                      item.active
-                        ? 'bg-primary/15 text-primary'
-                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <Icon className="size-4" />
-                      {item.label}
-                    </span>
-                    {item.badge && (
-                      <Badge variant="secondary" className="font-mono text-xs">
-                        {item.badge}
-                      </Badge>
-                    )}
-                  </Link>
-                )
-              })}
-              <div className="mt-2 flex flex-wrap gap-2 border-t border-border pt-2">
-                {QUIN_SOCIALS.map((social) => (
-                  <a
-                    key={social.name}
-                    href={social.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded bg-secondary px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    {social.name}
-                  </a>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
       </header>
 
-      {/* Instant Command Search Modal */}
-      <Dialog open={searchOpen} onOpenChange={setSearchOpen}>
-        <DialogContent className="max-w-2xl gap-0 overflow-hidden p-0 border-border bg-card">
-          <DialogHeader className="border-b border-border p-3">
-            <DialogTitle className="sr-only">
-              Search Quin69 Episodes and Games
-            </DialogTitle>
-            <div className="flex items-center gap-2 px-1">
-              <Search className="size-4 text-primary shrink-0" />
-              <Input
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value)
-                }}
-                onKeyDown={(e) => {
-                  if (
-                    e.nativeEvent.isComposing ||
-                    e.keyCode === 229
-                  ) {
-                    return
-                  }
-                  if (e.key === 'Enter' && query.trim()) {
-                    setSearchOpen(false)
-                    router.push(
-                      `/games?filter=Game&game=${encodeURIComponent(query.trim())}`
-                    )
-                  }
-                }}
-                placeholder="Type a game name (e.g. Path of Exile, Valheim, Elden Ring, Terraria)..."
-                className="h-9 border-0 bg-transparent px-1 text-sm focus-visible:ring-0"
-                autoFocus
-              />
-              {query && (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setQuery('')}
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-          </DialogHeader>
-
-          <div className="max-h-[65vh] overflow-y-auto p-3 chat-scrollbar flex flex-col gap-4">
-            {/* Matching Games Library */}
-            <div>
-              <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  <Gamepad2 className="size-3.5 text-primary" />
-                  {debouncedQuery.length >= 2
-                    ? 'Matching Games in Library'
-                    : 'Most Played Categories'}
-                </span>
-                <Link
-                  href="/library"
-                  onClick={() => setSearchOpen(false)}
-                  className="text-xs text-primary hover:underline"
-                >
-                  View all 92 games
-                </Link>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {displayedLibrary.map((g) => (
-                  <button
-                    key={g.game_id}
-                    type="button"
-                    onClick={() => {
-                      setSearchOpen(false)
-                      router.push(`/games?game_id=${g.game_id}`)
-                    }}
-                    className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-secondary/40 p-2 text-left transition-colors hover:border-primary/40 hover:bg-secondary"
-                  >
-                    <img
-                      src={formatBoxArtUrl(g.chapter_image, 80, 106)}
-                      alt={g.game_name}
-                      className="h-11 w-8 rounded object-cover shrink-0 bg-muted"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-semibold text-foreground">
-                        {g.game_name}
-                      </p>
-                      <p className="font-mono text-[11px] text-muted-foreground">
-                        {g.count} Episodes
-                      </p>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Matching / Latest Episodes */}
-            <div>
-              <div className="mb-2 flex items-center justify-between px-1">
-                <span className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  <Sparkles className="size-3.5 text-primary" />
-                  {debouncedQuery.length >= 2
-                    ? isSearching
-                      ? 'Searching episodes...'
-                      : 'Matching VOD Episodes'
-                    : 'Recent Episodes with Chat Replay'}
-                </span>
-                <Link
-                  href="/games"
-                  onClick={() => setSearchOpen(false)}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Browse all episodes
-                </Link>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                {displayedEpisodes.length === 0 ? (
-                  <p className="py-6 text-center text-xs text-muted-foreground">
-                    No episodes found matching &ldquo;{debouncedQuery}&rdquo;.
-                  </p>
-                ) : (
-                  displayedEpisodes.map((ep) => (
-                    <button
-                      key={ep.id}
-                      type="button"
-                      onClick={() => {
-                        setSearchOpen(false)
-                        router.push(`/games/${ep.vod_id}?game_id=${ep.id}`)
-                      }}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-transparent bg-secondary/30 p-2 text-left transition-colors hover:border-primary/30 hover:bg-secondary/80"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative h-11 w-20 shrink-0 overflow-hidden rounded bg-muted">
-                          {ep.thumbnail_url && (
-                            <img
-                              src={ep.thumbnail_url}
-                              alt={ep.title}
-                              className="size-full object-cover"
-                            />
-                          )}
-                          <span className="absolute bottom-0.5 right-0.5 rounded bg-background/90 px-1 font-mono text-[10px] text-foreground">
-                            {formatDuration(ep.duration)}
-                          </span>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-foreground">
-                            {ep.title}
-                          </p>
-                          <p className="truncate text-[11px] text-muted-foreground">
-                            {ep.game_name} &bull; {formatDateShort(ep.created_at)}
-                          </p>
-                        </div>
-                      </div>
-                      <Badge variant="outline" className="font-mono text-[10px] shrink-0">
-                        VOD #{ep.vod_id}
-                      </Badge>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between border-t border-border bg-secondary/30 px-4 py-2 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <Clock className="size-3 text-primary" />
-              Press <Kbd>Enter</Kbd> to filter all episodes
-            </span>
-            <span className="font-mono">Edge-Cached Archive API</span>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {searchOpen && (
+        <SearchDialog
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          overview={overview}
+        />
+      )}
     </>
+  )
+}
+
+function SearchDialog({
+  open,
+  onOpenChange,
+  overview,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  overview?: QuinOverviewData
+}) {
+  const router = useRouter()
+  const [query, setQuery] = useState('')
+  const [debounced, setDebounced] = useState('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 180)
+    return () => clearTimeout(t)
+  }, [query])
+
+  const searching = debounced.length >= 2
+
+  const { data: gamesRes } = useSWR<{ data: QuinLibraryGame[] }>(
+    searching
+      ? `/api/quin/library?limit=6&page=1&game_name=${encodeURIComponent(debounced)}`
+      : null,
+    fetcher,
+    { keepPreviousData: true }
+  )
+  const { data: episodesRes, isLoading } = useSWR<{ data: QuinGameEpisode[] }>(
+    searching
+      ? `/api/quin/games?limit=8&page=1&game_name=${encodeURIComponent(debounced)}`
+      : null,
+    fetcher,
+    { keepPreviousData: true }
+  )
+
+  const games = searching
+    ? (gamesRes?.data ?? [])
+    : (overview?.topGames?.slice(0, 6) ?? [])
+  const episodes = searching
+    ? (episodesRes?.data ?? [])
+    : (overview?.recentEpisodes?.slice(0, 5) ?? [])
+
+  const go = (href: string) => {
+    onOpenChange(false)
+    router.push(href)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        className="top-[12vh] max-w-[calc(100%-1.5rem)] translate-y-0 gap-0 overflow-hidden rounded-lg bg-surface p-0 ring-border sm:max-w-xl"
+      >
+        <DialogTitle className="sr-only">Search</DialogTitle>
+        <div className="flex items-center gap-3 border-b border-border px-4">
+          <Search className="size-4 shrink-0 text-muted-foreground" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return
+              if (e.key === 'Enter' && query.trim()) {
+                go(`/games?game=${encodeURIComponent(query.trim())}`)
+              }
+            }}
+            placeholder="Path of Exile, Valheim, Elden Ring…"
+            className="h-12 w-full bg-transparent text-[15px] outline-none placeholder:text-faint"
+          />
+          <kbd className="rounded border border-border px-1.5 text-[11px] text-faint">
+            Esc
+          </kbd>
+        </div>
+
+        <div className="thin-scroll max-h-[60vh] overflow-y-auto py-2">
+          {games.length > 0 && (
+            <>
+              <p className="px-4 pb-1 pt-2 text-[12px] text-faint">
+                {searching ? 'Games' : 'Most played'}
+              </p>
+              {games.map((g) => (
+                <button
+                  key={g.game_id}
+                  type="button"
+                  onClick={() => go(`/games?game_id=${g.game_id}`)}
+                  className="flex w-full items-center gap-3 px-4 py-1.5 text-left transition-colors hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+                >
+                  <img
+                    src={formatBoxArtUrl(g.chapter_image, 52, 70)}
+                    alt=""
+                    className="h-[35px] w-[26px] shrink-0 rounded-sm bg-raised object-cover"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{g.game_name}</span>
+                  <span className="tnum text-[12px] text-muted-foreground">
+                    {g.count} eps
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
+
+          <p className="px-4 pb-1 pt-3 text-[12px] text-faint">
+            {searching ? (isLoading ? 'Searching…' : 'Episodes') : 'Latest episodes'}
+          </p>
+          {episodes.length === 0 && searching && !isLoading ? (
+            <p className="px-4 py-6 text-muted-foreground">
+              Nothing found for “{debounced}”.
+            </p>
+          ) : (
+            episodes.map((ep) => (
+              <button
+                key={ep.id}
+                type="button"
+                onClick={() => go(episodeHref(ep))}
+                className="flex w-full items-center gap-3 px-4 py-1.5 text-left transition-colors hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+              >
+                <span className="relative h-[34px] w-[60px] shrink-0 overflow-hidden rounded-sm bg-raised">
+                  {ep.thumbnail_url && (
+                    <img
+                      src={ep.thumbnail_url}
+                      alt=""
+                      className="size-full object-cover"
+                    />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{ep.title}</span>
+                  <span className="block truncate text-[12px] text-muted-foreground">
+                    {ep.game_name} · {formatDateShort(ep.created_at)}
+                  </span>
+                </span>
+                <span className="tnum text-[12px] text-muted-foreground">
+                  {formatDuration(ep.duration)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+
+        {query.trim() && (
+          <button
+            type="button"
+            onClick={() =>
+              go(`/games?game=${encodeURIComponent(query.trim())}`)
+            }
+            className="border-t border-border px-4 py-2.5 text-left text-[13px] text-muted-foreground hover:bg-raised hover:text-foreground"
+          >
+            See all episodes matching “{query.trim()}” ↵
+          </button>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }

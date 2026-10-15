@@ -1,10 +1,9 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
-import { getQuinVodBundleServer } from '@/lib/quin-server'
+import { getQuinVodServer } from '@/lib/quin-server'
 import { VodTheaterWorkspace } from '@/components/quin/vod-theater-workspace'
 import { SiteHeader } from '@/components/quin/site-header'
-import { Button } from '@/components/ui/button'
-import { ArrowLeft, Tv } from 'lucide-react'
+import { PageTransition } from '@/components/quin/transitions'
 
 export async function generateMetadata({
   params,
@@ -12,11 +11,11 @@ export async function generateMetadata({
   params: Promise<{ vodId: string }>
 }) {
   const { vodId } = await params
-  const bundle = await getQuinVodBundleServer(vodId)
-  const title = bundle?.vod?.games?.[0]?.title || bundle?.vod?.title || `VOD #${vodId}`
+  const vod = await getQuinVodServer(vodId) // same request as the page; Next dedupes it
+  const title = vod?.games?.[0]?.title || vod?.title || `Stream #${vodId}`
   return {
-    title: `${title} — QUIN69.GG Theater & Chat Replay`,
-    description: bundle?.vod?.title || `Watch Quin69 VOD #${vodId} with synchronized Twitch chat replay.`,
+    title,
+    description: vod?.title || `Watch Quin69 stream #${vodId} with chat replay.`,
   }
 }
 
@@ -26,24 +25,23 @@ export default async function VodPlayerPage({
   params: Promise<{ vodId: string }>
 }) {
   const { vodId } = await params
-  const bundle = await getQuinVodBundleServer(vodId)
+  // Only the VOD is needed to render. Emotes, badges and chat load in the
+  // browser right after, so clicking a stream opens it immediately.
+  const vod = await getQuinVodServer(vodId)
 
-  if (!bundle) {
+  if (!vod) {
     return (
-      <div className="flex min-h-dvh flex-col bg-background">
+      <div className="flex min-h-dvh flex-col">
         <SiteHeader />
-        <main className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-          <Tv className="size-10 text-primary" />
-          <h1 className="text-xl font-bold">VOD #{vodId} Not Found</h1>
-          <p className="max-w-md text-xs text-muted-foreground">
-            This broadcast VOD could not be loaded or may still be processing in
-            the Overpowered Archive.
+        <main className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+          <h1 className="font-display text-[28px] font-semibold tracking-wide">
+            Couldn&apos;t find stream #{vodId}
+          </h1>
+          <p className="max-w-md text-muted-foreground">
+            It may not exist, or the archive is still processing it.
           </p>
-          <Link href="/games">
-            <Button size="sm">
-              <ArrowLeft data-icon="inline-start" />
-              Browse All Episodes
-            </Button>
+          <Link href="/games" className="mt-2 text-primary hover:underline">
+            Browse all episodes
           </Link>
         </main>
       </div>
@@ -51,8 +49,13 @@ export default async function VodPlayerPage({
   }
 
   return (
-    <Suspense fallback={<div className="h-dvh w-full bg-background" />}>
-      <VodTheaterWorkspace bundle={bundle} />
+    <Suspense fallback={<div className="h-dvh" />}>
+      <PageTransition>
+        <VodTheaterWorkspace
+          key={vod.id}
+          bundle={{ vod, emotes: [], badges: { channel: [], global: [] } }}
+        />
+      </PageTransition>
     </Suspense>
   )
 }

@@ -1,636 +1,567 @@
 'use client'
 
-import React, {
-  useState,
-  useEffect,
-  useRef,
-  useMemo,
-  useCallback,
-} from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { toast } from 'sonner'
+import useSWR from 'swr'
 import {
-  Maximize2,
-  Minimize2,
-  Share2,
   Check,
-  SkipBack,
-  SkipForward,
-  FastForward,
-  Rewind,
-  Layers,
-  Calendar,
-  Clock,
-  Radio,
-  ExternalLink,
-  Tv,
-  Sparkles,
-  MessageSquare,
-} from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+  External,
+  LinkIcon as Link2,
+  Theater as Maximize2,
+  TheaterExit as Minimize2,
+} from './icons'
 import { SiteHeader } from './site-header'
 import { ChatReplayPanel } from './chat-replay-panel'
+import { YouTubePlayer, YT_STATE } from './youtube-player'
+import { Morph, episodeMorphName } from './transitions'
+import { Thumb } from './thumb'
+import { VodRelated, useSeriesNeighbours, streamHref } from './vod-related'
 import {
+  episodeHref,
   formatBoxArtUrl,
   formatDateShort,
   formatDuration,
+  formatHumanDuration,
   formatTimestampParam,
   parseTimestampParam,
 } from '@/lib/quin-utils'
-import { useChatSettings, useWatchProgress } from '@/lib/use-quin-state'
-import type { QuinVodBundleResponse } from '@/lib/quin-types'
+import { getSavedProgress, useChatSettings, useWatchProgress } from '@/lib/use-quin-state'
+import type { QuinGameEpisode, QuinVodBundleResponse } from '@/lib/quin-types'
 import { cn } from '@/lib/utils'
 
-declare global {
-  interface Window {
-    YT?: any
-    onYouTubeIframeAPIReady?: () => void
-  }
-}
-
-export function VodTheaterWorkspace({
-  bundle,
-}: {
-  bundle: QuinVodBundleResponse
-}) {
+export function VodTheaterWorkspace({ bundle }: { bundle: QuinVodBundleResponse }) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { vod, emotes, badges } = bundle
+  const { vod } = bundle
+  // Emotes + badges arrive right after the page shows; chat renders text meanwhile
+  const { data: assets } = useSWR<Pick<QuinVodBundleResponse, 'emotes' | 'badges'>>(
+    `/api/quin/vods/${vod.id}/assets`,
+    (url: string) => fetch(url).then((r) => r.json()),
+    { revalidateOnFocus: false, revalidateIfStale: false }
+  )
+  const emotes = assets?.emotes ?? bundle.emotes
+  const badges = assets?.badges ?? bundle.badges
   const { settings } = useChatSettings()
-  const { saveProgress, getEpisodeProgress } = useWatchProgress()
+  const { saveProgress } = useWatchProgress()
 
   const games = useMemo(() => vod.games ?? [], [vod.games])
-
-  // Determine initial episode part from ?game_id=...
   const requestedGameId = searchParams.get('game_id')
-  const requestedTimeParam = searchParams.get('t')
+  const requestedT = searchParams.get('t')
 
   const initialPartIndex = useMemo(() => {
-    if (!games.length) return 0
-    if (requestedGameId) {
-      const idx = games.findIndex(
-        (g) =>
-          String(g.id) === requestedGameId ||
-          String(g.game_id) === requestedGameId
-      )
-      if (idx !== -1) return idx
-    }
-    return 0
+    if (!requestedGameId) return 0
+    const idx = games.findIndex(
+      (g) => String(g.id) === requestedGameId || String(g.game_id) === requestedGameId
+    )
+    return idx === -1 ? 0 : idx
   }, [games, requestedGameId])
 
-  const [activePartIndex, setActivePartIndex] = useState(initialPartIndex)
-  const activeEpisode = games[activePartIndex] ?? null
+  const [partIndex, setPartIndex] = useState(initialPartIndex)
+  useEffect(() => setPartIndex(initialPartIndex), [initialPartIndex])
+  const episode = games[partIndex] ?? null
+  const episodeRef = useRef(episode)
+  episodeRef.current = episode
 
-  useEffect(() => {
-    setActivePartIndex(initialPartIndex)
-  }, [initialPartIndex])
+  // Start position from the URL (?t= accepts episode time or full-stream time)
+  const urlSeek = useMemo(() => {
+    if (!episode) return 0
+    const t = parseTimestampParam(requestedT)
+    if (t === null) return 0
+    if (t >= episode.start && t <= episode.end && t > episode.duration) return t - episode.start
+    return Math.max(0, t)
+  }, [episode, requestedT])
 
-  // Calculate initial seek seconds inside the YouTube video
-  const initialVideoSeek = useMemo(() => {
-    if (!activeEpisode) return 0
-    const parsedT = parseTimestampParam(requestedTimeParam)
-    if (parsedT !== null) {
-      // If t is larger than episode.start, it might be a full-VOD offset
-      if (parsedT >= activeEpisode.start && parsedT <= activeEpisode.end) {
-        return Math.max(0, parsedT - activeEpisode.start)
-      }
-      return Math.max(0, parsedT)
-    }
-    const saved = getEpisodeProgress(activeEpisode.id)
-    return saved > 10 ? saved : 0
-  }, [activeEpisode, requestedTimeParam, getEpisodeProgress])
-
-  const [videoTime, setVideoTime] = useState(initialVideoSeek)
+  const [startAt, setStartAt] = useState(urlSeek)
+  const [videoTime, setVideoTime] = useState(urlSeek)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [theaterMode, setTheaterMode] = useState(false)
+  const [theater, setTheater] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
-  const [copiedLink, setCopiedLink] = useState(false)
-  const [watchLiveTwitch, setWatchLiveTwitch] = useState(
-    Boolean(vod.is_live && games.length === 0)
-  )
+  const [copied, setCopied] = useState(false)
   const [isPortrait, setIsPortrait] = useState(false)
+  const [mobileTab, setMobileTab] = useState<'chat' | 'more'>('chat')
+  const [showUpNext, setShowUpNext] = useState(false)
 
-  const ytPlayerRef = useRef<any>(null)
-  const playerContainerId = `quin-yt-player-${vod.id}`
+  const playerRef = useRef<any>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const neighbours = useSeriesNeighbours(vod, episode)
 
   useEffect(() => {
-    const checkViewport = () => {
-      setIsPortrait(window.innerWidth < 960)
-    }
-    checkViewport()
-    window.addEventListener('resize', checkViewport)
-    return () => window.removeEventListener('resize', checkViewport)
+    const mq = window.matchMedia('(max-width: 1023px)')
+    const update = () => setIsPortrait(mq.matches)
+    update()
+    mq.addEventListener('change', update)
+    return () => mq.removeEventListener('change', update)
   }, [])
 
-  // Mount & synchronize YouTube IFrame API player
+  // Resume where the visitor left off unless the URL asks for a time
   useEffect(() => {
-    if (!activeEpisode?.video_id || watchLiveTwitch) return
+    if (!episode) return
+    const saved = getSavedProgress(episode.id)
+    const t = urlSeek > 0 ? urlSeek : saved > 10 && saved < episode.duration - 30 ? saved : 0
+    setStartAt(t)
+    setVideoTime(t)
+    setShowUpNext(false)
+  }, [episode?.id, urlSeek]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    let isMounted = true
-    let pollTimer: ReturnType<typeof setInterval> | null = null
-
-    const createPlayer = () => {
-      if (!isMounted || !window.YT?.Player) return
-      try {
-        if (ytPlayerRef.current?.destroy) {
-          ytPlayerRef.current.destroy()
-        }
-      } catch {
-        // Ignore cleanup error
+  // Once a second: update the clock shown in the UI and save progress
+  useEffect(() => {
+    if (!episode) return
+    const id = setInterval(() => {
+      const p = playerRef.current
+      const t = p?.getCurrentTime?.()
+      if (typeof t !== 'number' || Number.isNaN(t)) return
+      const s = Math.floor(t)
+      setVideoTime(s)
+      if (p.getPlayerState?.() === YT_STATE.PLAYING) {
+        saveProgress({
+          episodeId: episode.id,
+          vodId: vod.id,
+          title: episode.title,
+          gameName: episode.game_name,
+          thumbnailUrl: episode.thumbnail_url,
+          chapterImage: episode.chapter_image,
+          timestamp: s,
+          duration: episode.duration,
+          updatedAt: Date.now(),
+        })
       }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [episode?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-      ytPlayerRef.current = new window.YT.Player(playerContainerId, {
-        events: {
-          onReady: (event: any) => {
-            if (!isMounted) return
-            if (initialVideoSeek > 0) {
-              event.target.seekTo(initialVideoSeek, true)
-            }
-          },
-          onStateChange: (event: any) => {
-            if (!isMounted) return
-            const state = event.data
-            setIsPlaying(state === 1)
-            const current = event.target?.getCurrentTime?.()
-            if (typeof current === 'number') {
-              setVideoTime(Math.floor(current))
-            }
-          },
-        },
-      })
+  // Chat reads the exact playhead from the player on every tick
+  const getPlayhead = useCallback(() => {
+    const t = playerRef.current?.getCurrentTime?.()
+    if (typeof t !== 'number' || Number.isNaN(t)) return null
+    return (episodeRef.current?.start ?? 0) + t
+  }, [])
 
-      pollTimer = setInterval(() => {
-        const player = ytPlayerRef.current
-        if (player && typeof player.getCurrentTime === 'function') {
-          const current = player.getCurrentTime()
-          if (typeof current === 'number' && !Number.isNaN(current)) {
-            const floored = Math.floor(current)
-            setVideoTime(floored)
-            if (player.getPlayerState?.() === 1 && activeEpisode) {
-              saveProgress({
-                episodeId: activeEpisode.id,
-                vodId: vod.id,
-                title: activeEpisode.title,
-                gameName: activeEpisode.game_name,
-                thumbnailUrl: activeEpisode.thumbnail_url,
-                chapterImage: activeEpisode.chapter_image,
-                timestamp: floored,
-                duration: activeEpisode.duration,
-                updatedAt: Date.now(),
-              })
-            }
-          }
-        }
-      }, 1000)
-    }
+  const onPlayer = useCallback((p: any | null) => {
+    playerRef.current = p
+    if (!p) setIsPlaying(false)
+  }, [])
 
-    if (window.YT && window.YT.Player) {
-      createPlayer()
-    } else {
-      const existingScript = document.getElementById('youtube-iframe-js')
-      if (!existingScript) {
-        const tag = document.createElement('script')
-        tag.id = 'youtube-iframe-js'
-        tag.src = 'https://www.youtube.com/iframe_api'
-        document.head.appendChild(tag)
-      }
-      const prevCallback = window.onYouTubeIframeAPIReady
-      window.onYouTubeIframeAPIReady = () => {
-        prevCallback?.()
-        createPlayer()
-      }
-    }
+  const next = neighbours.next
+  const onPlayerState = useCallback(
+    (state: number) => {
+      setIsPlaying(state === YT_STATE.PLAYING)
+      if (state === YT_STATE.PLAYING) setShowUpNext(false)
+      if (state === YT_STATE.ENDED && next) setShowUpNext(true)
+    },
+    [next]
+  )
 
-    return () => {
-      isMounted = false
-      if (pollTimer) clearInterval(pollTimer)
-      try {
-        ytPlayerRef.current?.destroy?.()
-      } catch {
-        // Ignore
-      }
-    }
-  }, [activeEpisode?.video_id, activeEpisode?.id, watchLiveTwitch])
-
-  // Keyboard shortcuts (T = Theater mode, C = Chat collapse, J/L = -10s/+10s)
+  // Keyboard: K play/pause · J/L ∓10s · F fullscreen · T theater · C chat
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (e.key.toLowerCase() === 't' && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault()
-        setTheaterMode((v) => !v)
-      } else if (e.key.toLowerCase() === 'c' && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault()
-        setChatCollapsed((v) => !v)
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const p = playerRef.current
+      switch (e.key.toLowerCase()) {
+        case 'k':
+          if (!p) return
+          if (p.getPlayerState?.() === YT_STATE.PLAYING) p.pauseVideo()
+          else p.playVideo()
+          break
+        case 'j':
+          p?.seekTo?.(Math.max(0, (p.getCurrentTime?.() ?? 0) - 10), true)
+          break
+        case 'l':
+          p?.seekTo?.((p.getCurrentTime?.() ?? 0) + 10, true)
+          break
+        case 'f':
+          if (document.fullscreenElement) document.exitFullscreen()
+          else stageRef.current?.requestFullscreen?.()
+          break
+        case 't':
+          setTheater((v) => !v)
+          break
+        case 'c':
+          setChatCollapsed((v) => !v)
+          break
+        case 'escape':
+          setTheater(false)
+          break
+        default:
+          return
       }
+      e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const seekVideoRelative = useCallback(
-    (deltaSeconds: number) => {
-      const next = Math.max(
-        0,
-        Math.min(activeEpisode?.duration ?? 36000, videoTime + deltaSeconds)
-      )
-      setVideoTime(next)
-      if (ytPlayerRef.current?.seekTo) {
-        ytPlayerRef.current.seekTo(next, true)
-      }
-    },
-    [videoTime, activeEpisode?.duration]
-  )
+  const seekToVodOffset = useCallback((vodSeconds: number) => {
+    const ep = episodeRef.current
+    if (!ep) return
+    const t = Math.max(0, vodSeconds - ep.start)
+    setVideoTime(t)
+    if (playerRef.current?.seekTo) playerRef.current.seekTo(t, true)
+    else setStartAt(t)
+  }, [])
 
-  const handleSeekToVodOffset = useCallback(
-    (vodSeconds: number) => {
-      if (!activeEpisode) return
-      const targetVideoTime = Math.max(0, vodSeconds - activeEpisode.start)
-      setVideoTime(targetVideoTime)
-      if (ytPlayerRef.current?.seekTo) {
-        ytPlayerRef.current.seekTo(targetVideoTime, true)
-      }
-      toast.success(
-        `Jumped to ${formatDuration(targetVideoTime)} in ${activeEpisode.title}`
-      )
-    },
-    [activeEpisode]
-  )
-
-  const handleCopyTimestampLink = useCallback(async () => {
-    const tParam = formatTimestampParam(videoTime)
-    const url = `${window.location.origin}/games/${vod.id}?game_id=${activeEpisode?.id ?? ''}&t=${tParam}`
+  const copyLink = useCallback(async () => {
+    const url = `${window.location.origin}/games/${vod.id}?game_id=${episode?.id ?? ''}&t=${formatTimestampParam(videoTime)}`
     try {
       await navigator.clipboard.writeText(url)
-      setCopiedLink(true)
-      toast.success(`Timestamp link copied (${tParam})`)
-      setTimeout(() => setCopiedLink(false), 2000)
-    } catch {
-      toast.error('Could not copy link')
-    }
-  }, [vod.id, activeEpisode?.id, videoTime])
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {}
+  }, [vod.id, episode?.id, videoTime])
 
-  const currentVodOffset = (activeEpisode?.start ?? 0) + videoTime
-  const prevVod = vod.prev?.[0] ?? null
-  const nextVod = vod.next?.[0] ?? null
-  const twitchParentHost =
-    typeof window !== 'undefined' ? window.location.hostname : 'localhost'
+  const selectPart = (i: number, g: QuinGameEpisode) => {
+    setPartIndex(i)
+    const sp = new URLSearchParams(window.location.search)
+    sp.set('game_id', String(g.id))
+    sp.delete('t')
+    window.history.replaceState(null, '', `?${sp.toString()}`)
+  }
+
+  const goNext = useCallback(() => {
+    if (next) router.push(episodeHref(next))
+  }, [next, router])
+
+  const currentVodOffset = (episode?.start ?? 0) + videoTime
+  const older = vod.next?.[0] ?? null
+  const chapterNow = vod.chapters?.find(
+    (c) => currentVodOffset >= c.start && currentVodOffset < c.end
+  )
 
   return (
-    <div className="flex h-dvh w-full flex-col overflow-hidden bg-background">
-      {!theaterMode && (
-        <SiteHeader
-          compact
-          rightSlot={
-            <div className="hidden sm:flex items-center gap-1.5">
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => setTheaterMode(true)}
-                title="Theater Mode (Shortcut: T)"
-              >
-                <Maximize2 data-icon="inline-start" />
-                Theater
-              </Button>
-            </div>
-          }
-        />
-      )}
+    <div className="flex h-dvh flex-col overflow-hidden">
+      {!theater && <SiteHeader />}
 
       <div
         className={cn(
-          'flex min-h-0 flex-1 w-full overflow-hidden',
-          isPortrait
-            ? 'flex-col'
-            : settings.chatOnLeft
-              ? 'flex-row-reverse'
-              : 'flex-row'
+          'flex min-h-0 flex-1 flex-col',
+          settings.chatOnLeft ? 'lg:flex-row-reverse' : 'lg:flex-row'
         )}
       >
-        {/* Main Video & Control Column */}
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-black">
-          {/* Video Stage */}
+        {/* Video, details and (desktop) more episodes */}
+        <div className="thin-scroll flex min-w-0 shrink-0 flex-col lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto">
+          <Morph name={episodeMorphName(episode?.id ?? -vod.id)}>
           <div
+            ref={stageRef}
             className={cn(
-              'relative w-full bg-black overflow-hidden',
-              isPortrait ? 'aspect-video shrink-0' : 'min-h-0 flex-1'
+              'relative w-full shrink-0 bg-black',
+              theater && !isPortrait
+                ? 'h-full'
+                : 'aspect-video lg:max-h-[calc(100dvh-56px-96px)]'
             )}
           >
-            {watchLiveTwitch ? (
-              <iframe
-                src={`https://player.twitch.tv/?channel=quin69&parent=${twitchParentHost}&autoplay=true`}
-                className="size-full border-0"
-                allowFullScreen
-                title="Quin69 Live Twitch Stream"
+            {episode ? (
+              <YouTubePlayer
+                videoId={episode.video_id}
+                start={startAt}
+                poster={episode.thumbnail_url}
+                boxArt={episode.chapter_image}
+                title={episode.title}
+                onPlayer={onPlayer}
+                onStateChange={onPlayerState}
+                quality={settings.videoQuality}
               />
-            ) : activeEpisode ? (
-              <div className="size-full relative">
-                <iframe
-                  id={playerContainerId}
-                  key={activeEpisode.video_id}
-                  src={`https://www.youtube.com/embed/${activeEpisode.video_id}?enablejsapi=1&rel=0&modestbranding=1&playsinline=1${initialVideoSeek > 0 ? `&start=${Math.floor(initialVideoSeek)}` : ''}`}
-                  className="size-full border-0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                  title={activeEpisode.title}
-                />
-              </div>
             ) : (
-              <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center">
-                <Radio className="size-10 text-primary animate-pulse" />
-                <h2 className="text-base font-bold text-foreground">
-                  {vod.is_live
-                    ? 'Quin69 is Currently Streaming This VOD Live!'
-                    : 'No YouTube Episode Segment Uploaded Yet'}
-                </h2>
-                <p className="max-w-md text-xs text-muted-foreground">
-                  {vod.title}
+              <div className="fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                <p className="font-display text-[24px] font-semibold tracking-wide">
+                  {vod.is_live ? 'This stream is still live' : 'Not uploaded yet'}
                 </p>
-                <div className="flex items-center gap-2 pt-2">
-                  <Button size="sm" onClick={() => setWatchLiveTwitch(true)}>
-                    <Tv data-icon="inline-start" />
-                    Watch Live Twitch Player
-                  </Button>
-                  {nextVod && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => router.push(`/games/${nextVod.id}`)}
+                <p className="max-w-md text-muted-foreground">
+                  {vod.is_live
+                    ? 'The YouTube upload and chat replay appear here after the stream ends.'
+                    : 'This stream has no YouTube upload yet. Check back later.'}
+                </p>
+                <div className="mt-1 flex gap-2">
+                  {vod.is_live && (
+                    <a
+                      href="https://twitch.tv/quin69"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="press flex h-9 items-center rounded-md bg-primary px-4 font-semibold text-primary-foreground hover:brightness-110"
                     >
-                      Watch Previous Completed VOD #{nextVod.id}
-                    </Button>
+                      Watch live on Twitch
+                      <External className="ml-1.5 size-4" />
+                    </a>
+                  )}
+                  {older && (
+                    <Link
+                      href={streamHref(older)}
+                      className="press flex h-9 items-center rounded-md bg-raised px-4 hover:bg-line"
+                    >
+                      Previous stream
+                    </Link>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Floating Exit Theater Button when in Theater Mode */}
-            {theaterMode && (
-              <div className="absolute top-3 left-3 z-30 flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  onClick={() => setTheaterMode(false)}
-                  className="bg-background/85 backdrop-blur-md border border-border"
-                >
-                  <Minimize2 data-icon="inline-start" />
-                  Exit Theater (T)
-                </Button>
-              </div>
+            {showUpNext && next && (
+              <UpNext ep={next} onCancel={() => setShowUpNext(false)} onGo={goNext} />
+            )}
+
+            {theater && !isPortrait && (
+              <button
+                type="button"
+                onClick={() => setTheater(false)}
+                className="press fade-in absolute left-3 top-3 z-10 flex h-8 items-center gap-1.5 rounded-md bg-black/70 px-2.5 text-[13px] text-white opacity-60 hover:opacity-100"
+              >
+                <Minimize2 className="size-3.5" />
+                Exit theater
+              </button>
             )}
           </div>
+          </Morph>
 
-          {/* Interactive Scrubber & Chapter Timeline Strip */}
-          {activeEpisode && !watchLiveTwitch && (
-            <div className="flex flex-col border-t border-border/80 bg-card/95 px-3 py-2 gap-1.5">
-              {/* Scrubber Bar */}
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-[11px] font-semibold text-primary w-14">
-                  {formatDuration(videoTime)}
-                </span>
-                <div className="relative flex-1 flex items-center">
-                  <input
-                    type="range"
-                    min={0}
-                    max={Math.max(1, activeEpisode.duration)}
-                    value={videoTime}
-                    onChange={(e) => {
-                      const val = Number(e.target.value)
-                      setVideoTime(val)
-                      if (ytPlayerRef.current?.seekTo) {
-                        ytPlayerRef.current.seekTo(val, true)
-                      }
-                    }}
-                    aria-label="Seek episode timeline and chat replay"
-                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-secondary accent-primary"
-                  />
+          {!theater && (
+            <div className="fade-in px-3 pb-3 pt-3 sm:px-5 lg:pb-4">
+              <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  {episode && (
+                    <Link
+                      href={`/games?game_id=${episode.game_id}`}
+                      title={`All ${episode.game_name} episodes`}
+                      className="hidden shrink-0 transition-transform hover:-translate-y-0.5 sm:block"
+                    >
+                      <img
+                        src={formatBoxArtUrl(episode.chapter_image, 84, 112)}
+                        alt={episode.game_name}
+                        className="h-14 w-[42px] rounded-sm bg-raised object-cover"
+                      />
+                    </Link>
+                  )}
+                  <div className="min-w-0">
+                    <h1 className="font-display text-[24px] font-semibold leading-tight tracking-wide sm:text-[28px]">
+                      {episode ? episode.title : vod.title}
+                    </h1>
+                    <p className="mt-0.5 text-muted-foreground">
+                      {episode && (
+                        <>
+                          <Link
+                            href={`/games?game_id=${episode.game_id}`}
+                            className="text-foreground transition-colors hover:text-primary"
+                          >
+                            {episode.game_name}
+                          </Link>
+                          <span className="text-faint"> · </span>
+                        </>
+                      )}
+                      {formatDateShort(episode?.created_at || vod.created_at)}
+                      {vod.is_live && (
+                        <>
+                          <span className="text-faint"> · </span>
+                          <span className="font-semibold text-live">Live</span>
+                        </>
+                      )}
+                    </p>
+                  </div>
                 </div>
-                <span className="font-mono text-[11px] text-muted-foreground w-14 text-right">
-                  {formatDuration(activeEpisode.duration)}
-                </span>
+
+                <div className="flex items-center gap-2">
+                  {episode && (
+                    <button
+                      type="button"
+                      onClick={copyLink}
+                      className="press tnum flex h-9 items-center gap-1.5 rounded-md bg-raised px-3 text-[13px] hover:bg-line"
+                    >
+                      {copied ? (
+                        <Check className="fade-in size-4 text-primary" />
+                      ) : (
+                        <Link2 className="size-4" />
+                      )}
+                      {copied ? 'Link copied' : `Share at ${formatDuration(videoTime)}`}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setTheater(true)}
+                    title="Theater mode (T)"
+                    aria-label="Theater mode"
+                    className="press hidden size-9 items-center justify-center rounded-md bg-raised hover:bg-line lg:flex"
+                  >
+                    <Maximize2 className="size-4" />
+                  </button>
+                </div>
               </div>
 
-              {/* Stream Chapters Breakdown */}
-              {vod.chapters && vod.chapters.length > 0 && (
-                <div className="hidden sm:flex items-center gap-1.5 overflow-x-auto py-0.5">
-                  <span className="text-[10px] font-mono uppercase text-muted-foreground shrink-0 flex items-center gap-1">
-                    <Layers className="size-3 text-primary" />
-                    Stream Chapters:
-                  </span>
-                  {vod.chapters.map((ch) => {
-                    const isCurrentChapter =
-                      currentVodOffset >= ch.start && currentVodOffset <= ch.end
-                    return (
-                      <div
-                        key={ch.id}
+              {games.length > 1 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-[13px] text-muted-foreground">
+                    {games.length} parts in this stream
+                  </p>
+                  <div className="no-scrollbar -mx-3 flex gap-2 overflow-x-auto px-3 sm:mx-0 sm:px-0">
+                    {games.map((g, i) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => selectPart(i, g)}
                         className={cn(
-                          'flex items-center gap-1.5 rounded px-2 py-0.5 text-[11px] transition-colors shrink-0',
-                          isCurrentChapter
-                            ? 'bg-primary/15 text-primary border border-primary/30 font-semibold'
-                            : 'bg-secondary/50 text-muted-foreground'
+                          'press flex shrink-0 items-center gap-2.5 rounded-md p-1.5 pr-3 text-left',
+                          i === partIndex ? 'bg-raised ring-1 ring-primary' : 'bg-surface hover:bg-raised'
                         )}
                       >
                         <img
-                          src={formatBoxArtUrl(ch.image, 32, 44)}
-                          alt={ch.name}
-                          className="h-3.5 w-2.5 rounded-xs object-cover"
+                          src={formatBoxArtUrl(g.chapter_image, 52, 70)}
+                          alt=""
+                          className="h-[35px] w-[26px] rounded-sm object-cover"
                         />
-                        <span>{ch.name}</span>
-                        <span className="font-mono text-[10px] opacity-75">
-                          ({formatDuration(ch.duration)})
+                        <span>
+                          <span className="block max-w-[220px] truncate text-[13px] font-medium">
+                            {g.title}
+                          </span>
+                          <span className="tnum block text-[12px] text-muted-foreground">
+                            {formatDuration(g.duration)}
+                          </span>
                         </span>
-                      </div>
-                    )
-                  })}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
+
+              {/* Mobile: switch between chat and more episodes */}
+              <div role="tablist" className="mt-3 flex border-b border-border lg:hidden">
+                {(
+                  [
+                    ['chat', 'Chat replay'],
+                    ['more', 'More episodes'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={mobileTab === key}
+                    onClick={() => setMobileTab(key)}
+                    className={cn(
+                      '-mb-px flex-1 border-b-2 pb-2 text-[14px] font-medium transition-colors',
+                      mobileTab === key
+                        ? 'border-primary text-foreground'
+                        : 'border-transparent text-muted-foreground'
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-5 hidden border-t border-border pt-4 text-[13px] lg:block">
+                <p className="text-muted-foreground">Stream</p>
+                <p className="mt-0.5 truncate" title={vod.title}>
+                  {vod.title}
+                </p>
+                {vod.chapters?.length > 0 && (
+                  <p className="mt-1 text-muted-foreground">
+                    {vod.chapters.map((c, i) => (
+                      <span key={c.id}>
+                        {i > 0 && <span className="text-faint"> → </span>}
+                        <span className={cn('transition-colors', c === chapterNow && 'text-foreground')}>
+                          {c.name}
+                        </span>{' '}
+                        <span className="tnum text-faint">{formatHumanDuration(c.duration)}</span>
+                      </span>
+                    ))}
+                  </p>
+                )}
+                <p className="mt-3 text-faint">
+                  Keys: <Kbd>K</Kbd> play/pause · <Kbd>J</Kbd>/<Kbd>L</Kbd> 10s · <Kbd>F</Kbd>{' '}
+                  fullscreen · <Kbd>T</Kbd> theater · <Kbd>C</Kbd> chat · click a chat time to jump
+                </p>
+              </div>
             </div>
           )}
 
-          {/* Broadcast Telemetry & Control Deck */}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-3 py-2.5 sm:px-4">
-            {/* Left: Active Game Boxart + Episode Title + Stream Title */}
-            <div className="flex items-center gap-3 min-w-0 flex-1">
-              {activeEpisode && (
-                <Link
-                  href={`/games?game_id=${activeEpisode.game_id}`}
-                  className="hidden sm:block shrink-0 overflow-hidden rounded-md border border-border hover:border-primary/50 transition-colors"
-                  title={`View all ${activeEpisode.game_name} episodes`}
-                >
-                  <img
-                    src={formatBoxArtUrl(activeEpisode.chapter_image, 80, 108)}
-                    alt={activeEpisode.game_name}
-                    className="h-11 w-8 object-cover"
-                  />
-                </Link>
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h1 className="truncate text-sm font-bold text-foreground sm:text-base">
-                    {activeEpisode ? activeEpisode.title : vod.title}
-                  </h1>
-                  <Badge
-                    variant="secondary"
-                    className="font-mono text-[10px] shrink-0"
-                  >
-                    VOD #{vod.id}
-                  </Badge>
-                  {vod.is_live && (
-                    <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-mono text-[10px]">
-                      LIVE STREAM
-                    </Badge>
-                  )}
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                  {activeEpisode && (
-                    <Link
-                      href={`/games?game_id=${activeEpisode.game_id}`}
-                      className="font-medium text-primary hover:underline"
-                    >
-                      {activeEpisode.game_name}
-                    </Link>
-                  )}
-                  <span className="flex items-center gap-1 font-mono text-[11px]">
-                    <Calendar className="size-3" />
-                    {formatDateShort(
-                      activeEpisode?.created_at || vod.created_at
-                    )}
-                  </span>
-                  <span className="hidden md:inline truncate max-w-md text-[11px] opacity-80">
-                    {vod.title}
-                  </span>
-                </div>
-              </div>
+          {!theater && !isPortrait && (
+            <div className="hidden px-5 pb-12 pt-6 lg:block">
+              <VodRelated vod={vod} episode={episode} neighbours={neighbours} />
             </div>
-
-            {/* Right: Multi-Part Selector + Seek Controls + Share + Prev/Next VOD */}
-            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-              {games.length > 1 && (
-                <select
-                  value={activePartIndex}
-                  onChange={(e) => {
-                    const idx = Number(e.target.value)
-                    setActivePartIndex(idx)
-                    setVideoTime(0)
-                  }}
-                  aria-label="Select episode part in this VOD"
-                  className="h-8 rounded-md border border-border bg-secondary px-2.5 text-xs font-medium text-foreground focus:border-primary focus:outline-none"
-                >
-                  {games.map((g, idx) => (
-                    <option key={g.id} value={idx}>
-                      Part {idx + 1}: {g.title} ({formatDuration(g.duration)})
-                    </option>
-                  ))}
-                </select>
-              )}
-
-              {!watchLiveTwitch && activeEpisode && (
-                <div className="hidden lg:flex items-center gap-1 mr-1">
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={() => seekVideoRelative(-30)}
-                    title="Rewind 30 seconds"
-                  >
-                    <Rewind data-icon="inline-start" />
-                    30s
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={() => seekVideoRelative(30)}
-                    title="Fast-forward 30 seconds"
-                  >
-                    30s
-                    <FastForward data-icon="inline-end" />
-                  </Button>
-                </div>
-              )}
-
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => setWatchLiveTwitch((v) => !v)}
-                className={cn(
-                  watchLiveTwitch &&
-                    'border-primary/50 bg-primary/15 text-primary'
-                )}
-              >
-                <Tv data-icon="inline-start" />
-                {watchLiveTwitch ? 'Episode VOD' : 'Live Player'}
-              </Button>
-
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={handleCopyTimestampLink}
-                title="Copy shareable link at current timestamp"
-              >
-                {copiedLink ? (
-                  <Check data-icon="inline-start" className="text-emerald-400" />
-                ) : (
-                  <Share2 data-icon="inline-start" />
-                )}
-                {copiedLink ? 'Copied' : 'Share Time'}
-              </Button>
-
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => setTheaterMode((v) => !v)}
-                className="hidden sm:inline-flex"
-                title="Toggle Theater Mode (T)"
-              >
-                {theaterMode ? <Minimize2 /> : <Maximize2 />}
-              </Button>
-
-              {/* Prev / Next VOD Navigation */}
-              <div className="flex items-center gap-1 border-l border-border pl-1.5">
-                {prevVod && (
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => router.push(`/games/${prevVod.id}`)}
-                    title={`Newer VOD: ${prevVod.title}`}
-                  >
-                    <SkipBack data-icon="inline-start" />
-                    Newer
-                  </Button>
-                )}
-                {nextVod && (
-                  <Button
-                    variant="secondary"
-                    size="xs"
-                    onClick={() => router.push(`/games/${nextVod.id}`)}
-                    title={`Older VOD: ${nextVod.title}`}
-                  >
-                    Older
-                    <SkipForward data-icon="inline-end" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Synchronized 60fps Chat Replay Column */}
+        {isPortrait && mobileTab === 'more' && (
+          <div className="fade-in min-h-0 flex-1 overflow-y-auto px-3 pb-10 pt-4">
+            <VodRelated vod={vod} episode={episode} neighbours={neighbours} />
+          </div>
+        )}
+
         <ChatReplayPanel
+          className={isPortrait && mobileTab === 'more' ? 'hidden' : undefined}
           vodId={vod.id}
-          episodeStartOffset={activeEpisode?.start ?? 0}
+          episodeStartOffset={episode?.start ?? 0}
           currentVodOffset={currentVodOffset}
+          getPlayhead={getPlayhead}
           isPlaying={isPlaying}
           emotes={emotes}
           badges={badges}
           initialComments={bundle.initialComments ?? []}
           initialCursor={bundle.initialCursor ?? null}
           isPortrait={isPortrait}
-          onSeekToVodOffset={handleSeekToVodOffset}
+          onSeekToVodOffset={seekToVodOffset}
           collapsed={chatCollapsed}
           onToggleCollapse={() => setChatCollapsed((v) => !v)}
         />
+      </div>
+    </div>
+  )
+}
+
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="rounded border border-border px-1 text-[11px] text-muted-foreground">
+      {children}
+    </kbd>
+  )
+}
+
+/** End-of-video card with an 8s countdown to the next episode. */
+function UpNext({
+  ep,
+  onCancel,
+  onGo,
+}: {
+  ep: QuinGameEpisode
+  onCancel: () => void
+  onGo: () => void
+}) {
+  const [left, setLeft] = useState(8)
+  useEffect(() => {
+    if (left <= 0) {
+      onGo()
+      return
+    }
+    const t = setTimeout(() => setLeft((v) => v - 1), 1000)
+    return () => clearTimeout(t)
+  }, [left, onGo])
+
+  return (
+    <div className="fade-in absolute inset-0 z-20 flex items-center justify-center bg-black/80 p-4">
+      <div className="page-in w-full max-w-sm text-center">
+        <p className="text-[13px] text-muted-foreground">Next episode in {left}s</p>
+        <button type="button" onClick={onGo} className="group mt-3 block w-full text-left">
+          <span className="relative block aspect-video overflow-hidden rounded-md bg-surface">
+            <Thumb srcs={[ep.thumbnail_url]} boxArt={ep.chapter_image} priority />
+            <span className="upnext-bar absolute inset-x-0 bottom-0 h-1 origin-left bg-primary" />
+          </span>
+          <span className="mt-2 block font-display text-[22px] font-semibold tracking-wide transition-colors group-hover:text-primary">
+            {ep.title}
+          </span>
+        </button>
+        <div className="mt-3 flex justify-center gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="press h-9 rounded-md bg-raised px-4 hover:bg-line"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onGo}
+            className="press h-9 rounded-md bg-primary px-4 font-semibold text-primary-foreground hover:brightness-110"
+          >
+            Play now
+          </button>
+        </div>
       </div>
     </div>
   )
